@@ -1,4 +1,12 @@
 {
+  "pdfHandwriting": "Handwriting",
+  "pdfHandwritingPen": "Pen",
+  "pdfHandwritingHighlighter": "Highlighter",
+  "pdfHandwritingEraser": "Eraser",
+  "pdfInkColor": "Ink color",
+  "pdfInkWidth": "Ink width",
+  "pdfFingerWriting": "Finger writing",
+  "pdfExitHandwriting": "Exit handwriting",
   "pdfReflow": "Text reflow",
   "pdfReflowFailed": "PDF reflow failed",
   "quickNotes": "Notebook",

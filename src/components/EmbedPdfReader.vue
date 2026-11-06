@@ -1,5 +1,7 @@
 ﻿<template>
   <div v-if="props.source && !pdfLoadError" ref="rootRef" class="embed-pdf-reader">
+    <HandwritingToolbar v-if="handwritingOpen" :tool="handwritingTool" :color="handwritingColor" :width="handwritingWidth" :allow-touch="handwritingTouch" :busy="handwritingBusy" :i18n="props.i18n"
+      @tool="setHandwritingTool" @color="value => { handwritingColor = value; updateHandwritingStyle() }" @width="value => { handwritingWidth = value; updateHandwritingStyle() }" @touch="value => { handwritingTouch = value; handwritingSession?.setAllowTouch(value) }" @exit="exitHandwriting" />
     <div ref="viewerHostRef" class="embed-pdf-reader__host"></div>
     <div v-if="pdfPreparing" class="embed-pdf-reader__loading embed-pdf-reader__loading--overlay">{{ pdfPreparing }}</div>
   </div>
@@ -20,6 +22,8 @@ import { addMissingPdfMenuItemsAfterFirst, capturePdfAnnotationImage, createEmbe
 import { getPdfScrollStrategy, settingsManager, type ReaderSettings, type ReadTheme } from '@/composables/useSetting'
 import { isMobile } from '@/utils/mobile'
 import Translate from './Translate.vue'
+import HandwritingToolbar from './HandwritingToolbar.vue'
+import { createHandwritingSession, createHandwritingTools, type HandwritingTool } from '@/handwriting/session'
 import { createPdfReflowSession, replacePdfDocument, synchronizeReflowAnnotation } from '@/services/pdfReflow'
 import type { ReflowDocument } from '@/core/pdfReflow'
 import { pdfQuickSendCommandId } from '@/utils/keyboard'
@@ -43,6 +47,54 @@ const pdfPreparing = ref('')
 const rootRef = ref<HTMLElement | null>(null)
 const viewerHostRef = ref<HTMLElement | null>(null)
 const documentId = 'sireader-document'
+const handwritingOpen = ref(false), handwritingBusy = ref(false), handwritingReady = ref(false)
+const handwritingTool = ref<HandwritingTool>('pen'), handwritingColor = ref('#243247'), handwritingWidth = ref(2), handwritingTouch = ref(false)
+let handwritingSession: ReturnType<typeof createHandwritingSession> | null = null
+let handwritingAnnotationsReady = false, handwritingPagesReady = false
+const markHandwritingReady = () => {
+  handwritingAnnotationsReady = true
+  if (!handwritingPagesReady) return
+  handwritingReady.value = true
+  if (activeRegistry) getCapability<any>(activeRegistry, 'commands')?.enableCategory('sireader-handwriting')
+}
+const markHandwritingPageReady = () => { handwritingPagesReady = true; if (handwritingAnnotationsReady) markHandwritingReady() }
+const handwritingError = (error: any) => { diagnosticLog('error', 'pdf.handwriting.failed', { error }); showMessage(error?.message || '手写操作失败，请重试', 4000, 'error') }
+const updateHandwritingStyle = () => handwritingSession?.setStyle(handwritingColor.value, handwritingWidth.value)
+const setHandwritingTool = (tool: HandwritingTool) => { handwritingTool.value = tool; handwritingSession?.setTool(tool) }
+const enterHandwriting = () => {
+  if (!handwritingReady.value || !activeRegistry || !viewerHostRef.value || handwritingOpen.value) return
+  try {
+    handwritingSession ||= createHandwritingSession({ registry: activeRegistry, documentId, host: viewerHostRef.value, onError: handwritingError })
+    handwritingSession.enter()
+    handwritingSession.setAllowTouch(handwritingTouch.value)
+    updateHandwritingStyle()
+    handwritingTool.value = 'pen'; handwritingOpen.value = true
+    activeContainer?.setAttribute('data-sireader-handwriting', '')
+    syncPdfAnnotationsHidden(false)
+    hidePdfTooltip()
+    window.dispatchEvent(new Event('sireader:close-reader-panels'))
+  } catch (error) { handwritingError(error) }
+}
+const exitHandwriting = async () => {
+  if (!handwritingOpen.value || handwritingBusy.value) return
+  handwritingBusy.value = true
+  try {
+    handwritingSession?.finish()
+    await flushAnnotations()
+    handwritingSession?.exit()
+    handwritingOpen.value = false
+    activeContainer?.removeAttribute('data-sireader-handwriting')
+    syncPdfAnnotationsHidden(!!props.hideAnnotations)
+  } catch (error) { handwritingError(error) }
+  finally { handwritingBusy.value = false }
+}
+const disposeHandwriting = () => {
+  handwritingSession?.dispose(); handwritingSession = null
+  handwritingOpen.value = false; handwritingReady.value = false
+  handwritingAnnotationsReady = handwritingPagesReady = false
+  activeContainer?.removeAttribute('data-sireader-handwriting')
+}
+
 const pdfLoadFailedMessage = () => props.i18n?.loadFailed || 'PDF load failed'
 const pdfLoadingText = () => props.i18n?.loading || 'Loading...'
 const failPdfLoad = (error: any) => {
@@ -93,7 +145,9 @@ let reflowController: AbortController | null = null
 let reflowSwitching = false
 let reflowDocument: (ReflowDocument & { url: string; name: string; original: { buffer: ArrayBuffer; name: string }; sourcePageCount: number; projectionIds: Set<string>; annotationsBridged: boolean }) | null = null
 const togglePdfReflow = async () => {
+  if (handwritingOpen.value) { await exitHandwriting(); if (handwritingOpen.value) return }
   if (reflowBusy.value) { if (!reflowSwitching) reflowController?.abort(); return }
+  disposeHandwriting()
   const registry = activeRegistry
   if (!registry) return
   const documents = getCapability<any>(registry, 'document-manager')
@@ -143,6 +197,7 @@ const togglePdfReflow = async () => {
   finally { if (reflowController === controller) { reflowSession?.dispose(); reflowSession = null; reflowController = null; reflowSwitching = false; reflowBusy.value = false; pdfPreparing.value = '' } }
 }
 const disposePdfViewer = () => {
+  disposeHandwriting()
   reflowController?.abort(); reflowController = null; reflowSwitching = false
   reflowSession?.dispose(); reflowSession = null; reflowDocument = null
   reflowOpen.value = false; reflowBusy.value = false
@@ -159,6 +214,9 @@ const disposePdfViewer = () => {
 }
 
 const PDF_PAGE_THEME_STYLE = `
+  :host([data-sireader-handwriting]) [data-epdf-i="main-toolbar"],
+  :host([data-sireader-handwriting]) [data-epdf-i="annotation-toolbar"]{display:none!important}
+
   :host([data-sireader-page-mode="dark"]) div[style*="mix-blend-mode"][style*="background-color"]{mix-blend-mode:screen!important}
   :host([data-sireader-page-mode="dark"]) img[src^="blob:"]{filter:invert(1) hue-rotate(180deg) brightness(.92) contrast(.92)}
   :host([data-sireader-hide-annotations]) :is([data-no-interaction],input[type="file"] ~ *){display:none!important}
@@ -213,7 +271,7 @@ const ensurePageThemeStyle = () => {
   shadow.appendChild(style)
 }
 const syncPdfAnnotationsHidden = (hidden: boolean) => {
-  ;(activeContainer as any)?.toggleAttribute?.('data-sireader-hide-annotations', hidden)
+  ;(activeContainer as any)?.toggleAttribute?.('data-sireader-hide-annotations', hidden && !handwritingOpen.value)
   if (hidden) hidePdfTooltip()
 }
 const applyPdfTheme = () => {
@@ -476,6 +534,7 @@ const setupPdfDoubleTapZoom = (registry: PluginRegistry) => {
     })
   }
   const onPointerUp = (event: PointerEvent) => {
+    if (handwritingOpen.value) return
     if (event.isPrimary === false) return
     const now = performance.now()
     const dx = event.clientX - last.x
@@ -645,6 +704,8 @@ const setupPdfCommands = (registry: PluginRegistry) => {
     showMessage(props.i18n?.capture || 'Drag to select a screenshot area', 1500)
     },
   })
+  if (!handwritingReady.value) rawCommands?.disableCategory('sireader-handwriting')
+  definitions.push({ id: 'sireader:handwriting', label: props.i18n?.pdfHandwriting || '手写笔记', icon: 'pencil', categories: ['tools', 'sireader-handwriting'], action: enterHandwriting })
   const installed = installPdfCommands(rawCommands, definitions, (error: any) => showMessage(error?.message || props.i18n?.pdfOperationFailed || 'PDF operation failed', 2500, 'error'))
   const schema = ui?.getSchema?.()
   const annotationMenu = schema?.selectionMenus?.annotation
@@ -658,6 +719,7 @@ const setupPdfCommands = (registry: PluginRegistry) => {
     const lockIndex = panIndex > 0 && mainGroup.items[panIndex - 1]?.type === 'divider' ? panIndex - 1 : panIndex
     toolbars['main-toolbar'] = { ...mainToolbar, items: mainToolbar.items.map((item: any) => item.id === 'center-group' ? { ...item, items: [
       ...item.items.slice(0, lockIndex),
+      { type: 'command-button', id: 'sireader-handwriting', commandId: 'sireader:handwriting', variant: 'icon-text', categories: ['tools'] },
       { type: 'command-button', id: 'sireader-pdf-reflow', commandId: 'sireader:pdf-reflow', variant: 'icon', categories: ['tools'] },
       { type: 'command-button', id: 'sireader-lock-annotation-tool', commandId: 'sireader:lock-annotation-tool', variant: 'icon', categories: ['tools'] },
       ...item.items.slice(lockIndex),
@@ -729,7 +791,7 @@ const setupPdfTooltip = () => {
   const root = rootRef.value
   if (!root) return
   const onMove = (event: PointerEvent) => {
-    if (event.pointerType !== 'mouse') return
+    if (handwritingOpen.value || event.pointerType !== 'mouse') return
     if (!root.contains(event.target as Node | null)) return
     const { clientX: x, clientY: y } = event
     cancelAnimationFrame(pdfTooltipFrame)
@@ -916,6 +978,7 @@ const handleReady = async (registry: PluginRegistry, nativeLoaded = false) => {
     const startedAt = Date.now()
     if (!recordKey || !annotation?.importAnnotations) {
       annotationPersistenceReady = true
+      markHandwritingReady()
       emit('annotations-ready')
       window.dispatchEvent(new Event('sireader:marks-updated'))
       refreshPdfTooltipAnnotations()
@@ -958,6 +1021,7 @@ const handleReady = async (registry: PluginRegistry, nativeLoaded = false) => {
     if (sessionToken !== viewerToken) return
     diagnosticLog('info', 'pdf.annotations.loaded', { key: recordKey, stored: stored?.length || 0, native: nativePdfAnnotationIds.size, managed: managed.length, created: managed.filter((item: any) => !existingNativeIds.has((item.annotation || item)?.id)).length, durationMs: Date.now() - startedAt })
     annotationPersistenceReady = true
+    markHandwritingReady()
     emit('annotations-ready')
     window.dispatchEvent(new Event('sireader:marks-updated'))
     refreshPdfTooltipAnnotations()
@@ -1076,7 +1140,7 @@ const config = computed(() => ({
   stamp: { manifests: pdfAssets.value?.stampManifests || [] },
   permissions: { enforceDocumentPermissions: true },
   capture: { imageType: 'image/png', scale: 2, withAnnotations: true },
-  annotations: { autoCommit: false, annotationAuthor: 'SiReader', deactivateToolAfterCreate: true },
+  annotations: { tools: createHandwritingTools(() => handwritingSession, markHandwritingPageReady), autoCommit: false, annotationAuthor: 'SiReader', deactivateToolAfterCreate: true },
   pan: { defaultMode: 'always' },
   commands: {
     'scroll:previous-page': { id: 'scroll:previous-page', labelKey: 'page.previous', icon: 'chevronLeft', categories: ['page', 'navigation', 'navigation-previous'], action: ({ registry, documentId }: any) => registry.getPlugin('scroll')?.provides()?.forDocument(documentId)?.scrollToPreviousPage(pdfPageBehavior()) },
@@ -1137,6 +1201,7 @@ const themeObserver = new MutationObserver(() => requestAnimationFrame(applyPdfT
 ;[document.documentElement, document.body].forEach(el => themeObserver.observe(el, { attributes: true, attributeFilter: ['class', 'style', 'data-theme-mode'] }))
 
 onBeforeUnmount(() => {
+  disposeHandwriting()
   clearTimeout(zoomSaveTimer)
   cleanupAnnotationEvents?.()
   cleanupDocumentEvents?.()
@@ -1169,6 +1234,7 @@ const resize = () => {
 }
 
 const flushAnnotations = async () => {
+  handwritingSession?.finish()
   await annotationCommitQueue
   await taskToPromise(activeAnnotationScope?.commit?.())
   await annotationPersistenceQueue
@@ -1177,8 +1243,8 @@ defineExpose({ resize, flushAnnotations })
 </script>
 
 <style scoped>
-.embed-pdf-reader{position:relative;width:100%;height:100%;display:block;background:var(--b3-theme-background)}
-.embed-pdf-reader :deep(> *){width:100%;height:100%}
+.embed-pdf-reader{position:relative;width:100%;height:100%;display:flex;flex-direction:column;background:var(--b3-theme-background)}
+.embed-pdf-reader__host{width:100%;flex:1;min-height:0}
 .embed-pdf-reader__loading{height:100%;display:flex;align-items:center;justify-content:center;color:var(--b3-theme-on-surface)}
 .embed-pdf-reader__loading--overlay{position:absolute;inset:0;background:var(--b3-theme-background);z-index:1}
 </style>

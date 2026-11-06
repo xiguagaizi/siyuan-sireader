@@ -1,4 +1,12 @@
 {
+  "pdfHandwriting": "手写笔记",
+  "pdfHandwritingPen": "钢笔",
+  "pdfHandwritingHighlighter": "荧光笔",
+  "pdfHandwritingEraser": "橡皮擦",
+  "pdfInkColor": "笔迹颜色",
+  "pdfInkWidth": "笔迹粗细",
+  "pdfFingerWriting": "手指书写",
+  "pdfExitHandwriting": "退出手写",
   "pdfReflow": "文字重排",
   "pdfReflowFailed": "PDF 重排失败",
   "quickNotes": "笔记本",

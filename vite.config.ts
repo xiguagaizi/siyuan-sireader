@@ -148,7 +148,8 @@ export default defineConfig(({
           { src: './src/vendor/scribe-layout', dest: './sources/' },
           { src: './src/core/*Reflow*.ts', dest: './sources/reflow/core/' },
           { src: './src/services/pdfReflow*.ts', dest: './sources/reflow/services/' },
-          { src: ['./src/components/EmbedPdfReader.vue', './src/components/Reader.vue', './vite.config.ts', './package.json', './plugin.json'], dest: './sources/integration/' },
+          { src: './src/handwriting/*.ts', dest: './sources/handwriting/' },
+          { src: ['./src/components/HandwritingToolbar.vue', './src/components/EmbedPdfReader.vue', './src/components/Reader.vue', './vite.config.ts', './package.json', './plugin.json'], dest: './sources/integration/' },
           {
             src: "./README*.md",
             dest: "./",
