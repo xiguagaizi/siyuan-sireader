@@ -27,7 +27,7 @@
     </div>
     <label class="handwriting-toolbar__touch"><input type="checkbox" :checked="allowTouch" @change="$emit('touch', ($event.target as HTMLInputElement).checked)"><span>{{ label('pdfFingerWriting', '手指书写') }}</span></label>
     <div class="handwriting-toolbar__actions">
-      <button type="button" :aria-label="fullscreen ? '退出全屏' : '全屏'" :title="fullscreen ? '退出全屏' : '全屏'" :aria-pressed="fullscreen" @click="$emit('fullscreen')"><svg viewBox="0 0 24 24" aria-hidden="true"><path :d="fullscreen ? 'M9 3v6H3 M15 3v6h6 M3 15h6v6 M21 15h-6v6' : 'M9 3H3v6 M15 3h6v6 M3 15v6h6 M21 15v6h-6'"/></svg></button>
+      <button type="button" :aria-label="displayLabel" :title="displayLabel" :aria-pressed="fullscreen" @click="$emit('fullscreen')"><svg viewBox="0 0 24 24" aria-hidden="true"><path :d="fullscreen ? 'M9 3v6H3 M15 3v6h6 M3 15h6v6 M21 15h-6v6' : 'M9 3H3v6 M15 3h6v6 M3 15v6h6 M21 15v6h-6'"/></svg></button>
       <button type="button" class="handwriting-toolbar__exit" :disabled="busy" :aria-label="label('pdfExitHandwriting', '退出手写')" :title="label('pdfExitHandwriting', '退出手写')" @click="$emit('exit')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 5-7 7 7 7 M3 12h18"/></svg><span>{{ busy ? label('saving', '保存中…') : '返回' }}</span></button>
     </div>
   </div>
@@ -36,8 +36,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { HandwritingTool } from '@/handwriting/session'
-const props = defineProps<{ tool: HandwritingTool; color: string; width: number; allowTouch: boolean; busy: boolean; canUndo: boolean; canRedo: boolean; fullscreen: boolean; i18n?: any }>()
+const props = defineProps<{ tool: HandwritingTool; color: string; width: number; allowTouch: boolean; busy: boolean; canUndo: boolean; canRedo: boolean; fullscreen: boolean; nativeFullscreen: boolean; i18n?: any }>()
 const emit = defineEmits<{ tool: [value: HandwritingTool]; color: [value: string]; width: [value: number]; touch: [value: boolean]; exit: []; undo: []; redo: []; fullscreen: [] }>()
+const displayLabel = computed(() => props.nativeFullscreen ? (props.fullscreen ? '退出全屏' : '全屏') : (props.fullscreen ? '恢复布局' : '展开阅读'))
 const label = (key: string, fallback: string) => props.i18n?.[key] || fallback
 const toolbar = ref<HTMLElement>(), colorButton = ref<HTMLButtonElement>(), widthButton = ref<HTMLButtonElement>()
 const panel = ref<'color' | 'width' | null>(null)

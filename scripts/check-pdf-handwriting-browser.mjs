@@ -182,6 +182,48 @@ try {
   await page.getByRole('button', { name: '笔迹粗细', exact: true }).click(); await page.getByRole('menuitemradio', { name: '2 pt', exact: true }).click()
   console.log('HIGHLIGHTER width/opacity and FINGER opt-in passed')
 
+  // Reproduce Home Screen WebKit's missing API and a translucent status bar.
+  await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 24, bottom: 20, left: 0, right: 0 } })
+  await page.evaluate(() => {
+    const original = HTMLElement.prototype.requestFullscreen
+    window.restoreFullscreenAPI = () => { HTMLElement.prototype.requestFullscreen = original; delete navigator.standalone; window.dispatchEvent(new Event('resize')) }
+    HTMLElement.prototype.requestFullscreen = undefined
+    Object.defineProperty(navigator, 'standalone', { configurable: true, value: true })
+    window.dispatchEvent(new Event('resize'))
+  })
+  await page.getByRole('button', { name: '展开阅读', exact: true }).waitFor()
+  await page.waitForFunction(() => parseFloat(getComputedStyle(document.querySelector('.embed-pdf-reader')).paddingTop) === 24)
+  assert((await page.locator('.handwriting-toolbar').boundingBox()).y >= 24)
+  // A host that already starts below the status bar must not gain another gap.
+  await page.evaluate(() => { const app = document.getElementById('app'); app.style.marginTop = '40px'; app.style.height = '700px'; window.dispatchEvent(new Event('resize')) })
+  await page.waitForFunction(() => parseFloat(getComputedStyle(document.querySelector('.embed-pdf-reader')).paddingTop) === 0)
+  await page.evaluate(() => { const app = document.getElementById('app'); app.style.marginTop = '0'; app.style.height = '760px'; window.dispatchEvent(new Event('resize')); window.readerBeforeExpand = window.registry })
+  const originalBox = await page.locator('.embed-pdf-reader').boundingBox()
+  await page.getByRole('button', { name: '展开阅读', exact: true }).click()
+  await page.locator('.embed-pdf-reader--expanded').waitFor()
+  await page.waitForFunction(() => parseFloat(getComputedStyle(document.querySelector('.embed-pdf-reader')).paddingTop) === 24)
+  assert.equal(await page.evaluate(() => !!document.fullscreenElement), false)
+  assert.equal(await page.evaluate(() => window.readerBeforeExpand === window.registry), true)
+  const expandedBox = await page.locator('.embed-pdf-reader').boundingBox()
+  assert.equal(expandedBox.width, 1000); assert.equal(expandedBox.height, 850)
+  assert((await page.locator('.handwriting-toolbar').boundingBox()).y >= 24)
+  await page.screenshot({ path: 'tmp/native-browser/handwriting-pwa-expanded.png' })
+  await pen(400, 300); await waitSavedCount(8); await assertLastStrokeAt(400, 300)
+  await page.getByRole('button', { name: '撤销', exact: true }).click(); await waitSavedCount(7)
+  await page.getByRole('button', { name: '恢复布局', exact: true }).click()
+  await page.locator('.embed-pdf-reader--expanded').waitFor({ state: 'hidden' })
+  assert.equal((await page.locator('.embed-pdf-reader').boundingBox()).width, originalBox.width)
+  assert.equal(await page.locator('.embed-pdf-reader').getAttribute('popover'), null)
+  await page.getByRole('button', { name: '展开阅读', exact: true }).click()
+  await page.keyboard.press('Escape')
+  await page.locator('.embed-pdf-reader--expanded').waitFor({ state: 'hidden' })
+  await page.evaluate(() => window.restoreFullscreenAPI())
+  await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 0, bottom: 0, left: 0, right: 0 } })
+  await page.evaluate(() => window.dispatchEvent(new Event('resize')))
+  await page.getByRole('button', { name: '全屏', exact: true }).waitFor()
+  console.log('PWA missing Fullscreen API: page expansion, safe-area offset, no duplicate gap, drawing and restore passed')
+
+
   await page.evaluate(() => { window.registry.getPlugin('scroll').provides().forDocument('sireader-document').scrollToPage({ pageNumber: 1, behavior: 'instant' }); window.registry.getPlugin('zoom').provides().forDocument('sireader-document').requestZoom('fit-width') })
   for (const [name, width, height] of [['desktop', 1000, 850], ['tablet', 820, 1180], ['mobile', 390, 844]]) {
     await page.setViewportSize({ width, height })
