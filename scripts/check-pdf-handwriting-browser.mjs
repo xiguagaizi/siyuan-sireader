@@ -50,7 +50,7 @@ const pen = async (x, y, dx = 60, dy = 30) => {
   for (let i = 1; i <= 8; i++) await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x + dx * i / 8, y: y + dy * i / 8, buttons: 1, pointerType: 'pen', force: .5 })
   await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: x + dx, y: y + dy, button: 'left', buttons: 0, clickCount: 1, pointerType: 'pen' })
 }
-const touch = (type, points) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: points.map(([x, y, radiusX = 1, radiusY = 1, rotationAngle = 0], i) => ({ x, y, radiusX, radiusY, rotationAngle, id: i + 1 })) })
+const touch = (type, points) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: points.map(([x, y, radiusX = 1, radiusY = 1], i) => ({ x, y, radiusX, radiusY, id: i + 1 })) })
 const assertLastStrokeAt = async (x, y, dx = 60, dy = 30) => {
   const rect = await page.evaluate(({ x, y }) => {
     const r = window.registry, scroll = r.getPlugin('scroll').provides().forDocument('sireader-document')
@@ -90,24 +90,6 @@ try {
   await touch('touchEnd', [])
   assert.deepEqual(await view(), initialView); assert.equal((await managed()).length, 0)
   console.log('PALM SUPPORT WITHOUT PEN-DOWN: adjacent contacts ignored for full lifetime')
-  // Real contact geometry, with no pen/hover and no nearby second finger.
-  for (const [label, radiusX, radiusY, angle] of [['broad', 30, 14, 0], ['oblique-knuckle', 20, 4, 45], ['borderline', 19, 12, 0]]) {
-    await touch('touchStart', [[650, 500, radiusX, radiusY, angle]])
-    await page.waitForTimeout(50)
-    await touch('touchMove', [[640, 480, radiusX, radiusY, angle]])
-    await page.waitForTimeout(200)
-    // The contact shrinks as the hand rolls, but must stay quarantined.
-    await touch('touchMove', [[620, 400, 8, 7]])
-    await touch('touchEnd', [])
-    assert.deepEqual(await view(), initialView, label)
-    assert.equal((await managed()).length, 0)
-    console.log(`CONTACT SHAPE WITHOUT PEN-DOWN: ${label} leaves PDF stationary`)
-  }
-  await touch('touchStart', [[550, 500, 9, 8], [800, 500, 20, 4, 45]])
-  await touch('touchMove', [[500, 450, 9, 8], [850, 550, 8, 7]])
-  await touch('touchEnd', [])
-  assert.deepEqual(await view(), initialView)
-  console.log('WIDELY SEPARATED SUPPORT: one elongated contact prevents native pinch admission')
   // Native pen hover rejects even separated support contacts before pinch starts.
   await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 400, y: 300, pointerType: 'pen', force: 0 })
   await touch('touchStart', [[600, 500], [800, 500]])
@@ -134,11 +116,14 @@ try {
   console.log('CONTINUOUS PEN saved', (await managed()).map(a => ({ id: a.id, rect: a.rect, points: a.inkList[0].points.length })))
   const beforeScroll = await page.evaluate(() => window.registry.getPlugin('viewport').provides().forDocument('sireader-document').getMetrics().scrollTop)
   await page.waitForTimeout(750)
-  await touch('touchStart', [[600, 500, 9, 8]])
+  // Browser estimates can be broad even for an intentional finger gesture.
+  // Shape alone must not block navigation; these are regression inputs, not
+  // measurements of the user's iPad.
+  await touch('touchStart', [[600, 500, 32, 30]])
   await page.waitForTimeout(120)
   const panSamples = []
   for (const y of [480, 460, 440, 420, 400, 380]) {
-    await touch('touchMove', [[600, y, 9, 8]])
+    await touch('touchMove', [[600, y, 32, 30]])
     panSamples.push(await page.evaluate(() => window.registry.getPlugin('viewport').provides().forDocument('sireader-document').getMetrics().scrollTop))
   }
   await touch('touchEnd', [])
@@ -155,8 +140,8 @@ try {
 
   assert.equal((await managed()).length, 2)
   const beforeZoom = await page.evaluate(() => window.registry.getPlugin('zoom').provides().forDocument('sireader-document').getState().currentZoomLevel)
-  await touch('touchStart', [[350, 350, 9, 8], [550, 350, 9, 8]])
-  await touch('touchMove', [[320, 350, 9, 8], [580, 350, 9, 8]]); await touch('touchMove', [[290, 350, 9, 8], [610, 350, 9, 8]]); await touch('touchEnd', [])
+  await touch('touchStart', [[350, 350, 32, 30], [550, 350, 32, 30]])
+  await touch('touchMove', [[320, 350, 32, 30], [580, 350, 32, 30]]); await touch('touchMove', [[290, 350, 32, 30], [610, 350, 32, 30]]); await touch('touchEnd', [])
   await page.waitForTimeout(500)
   const afterZoom = await page.evaluate(() => window.registry.getPlugin('zoom').provides().forDocument('sireader-document').getState().currentZoomLevel)
   assert(afterZoom > beforeZoom + .1); console.log('PINCH zoom', beforeZoom, '->', afterZoom)

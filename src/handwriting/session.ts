@@ -1,7 +1,5 @@
 // The snippet's public tool factories own sampling, preview and PDF coordinates.
 // Keep raw input here: EmbedPDF 2.x strips pointerType/pressure when dispatching.
-import { createPalmRejection } from './palmRejection'
-
 export const TOUCH_INTENT_DELAY = 100, PEN_TOUCH_GUARD = 650, MIN_PINCH_SPAN = 80
 export type HandwritingTool = 'pen' | 'highlighter' | 'eraser'
 type Point = { x: number; y: number }
@@ -102,7 +100,6 @@ export function createHandwritingSession(options: {
     }
   }
   const touches = new Map<number, Point>(), blocked = new Set<number>()
-  const palmRejection = createPalmRejection()
   const pointerTypes = ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'pointerover'] as const
   const safe = (fn: () => void) => { try { fn() } catch (error) { onError(error) } }
   const stop = (event: Event) => { if (event.cancelable) event.preventDefault(); event.stopImmediatePropagation() }
@@ -110,8 +107,6 @@ export function createHandwritingSession(options: {
   const flushPan = () => {
     clearTimeout(panTimer); panTimer = undefined
     if (!enabled || allowTouch || penDown || blocked.size || (palmGesture && touchCount > 0) || Date.now() < palmUntil || touches.size !== 1 || multiTouch || !pan) return
-    const pending = palmRejection.pendingDelay(Date.now())
-    if (pending) { panTimer = setTimeout(flushPan, pending); return }
     const point = touches.values().next().value!
     if (Math.hypot(point.x - pan.x, point.y - pan.y) < 10) return
     viewport.scrollTo({ x: pan.left + pan.x - point.x, y: pan.top + pan.y - point.y, behavior: 'instant' })
@@ -138,16 +133,9 @@ export function createHandwritingSession(options: {
       if (event.type === 'pointerup' || event.type === 'pointercancel') trailTimer = setTimeout(hideFeedback, 180)
     }
     if (event.pointerType === 'touch') {
-      if (!nativePinch && (event.type === 'pointerdown' || event.type === 'pointermove') &&
-        palmRejection.observe(`pointer:${event.pointerId}`, event, Date.now())) {
-        quarantineTouches(); blocked.add(event.pointerId); palmGesture = true
-      }
       if (event.type === 'pointerdown' && (penDown || Date.now() < palmUntil || blocked.size > 0 || (palmGesture && touchCount > 0))) blocked.add(event.pointerId)
       if (blocked.has(event.pointerId)) {
-        if (event.type === 'pointerup' || event.type === 'pointercancel') {
-          blocked.delete(event.pointerId); palmRejection.release(`pointer:${event.pointerId}`)
-          if (!blocked.size && !touchCount) { palmGesture = false; palmRejection.reset() }
-        }
+        if (event.type === 'pointerup' || event.type === 'pointercancel') { blocked.delete(event.pointerId); if (!blocked.size && !touchCount) palmGesture = false }
         stop(event); return
       }
       if (event.type === 'pointerdown') {
@@ -179,7 +167,6 @@ export function createHandwritingSession(options: {
           touches.set(event.pointerId, { x: event.clientX, y: event.clientY }); flushPan()
         }
         touches.delete(event.pointerId)
-        palmRejection.release(`pointer:${event.pointerId}`)
         if (!touches.size) { stopPan(); multiTouch = false }
       }
     }
@@ -191,19 +178,8 @@ export function createHandwritingSession(options: {
     touchCount = event.touches.length
     if (event.type === 'touchend' || event.type === 'touchcancel') {
       if (touchCount < 2) nativePinch = false
-      for (const touch of Array.from(event.changedTouches || [])) palmRejection.release(`touch:${touch.identifier}`)
-      if (!touchCount) { palmGesture = false; blocked.clear(); touches.clear(); stopPan(); multiTouch = false; palmRejection.reset() }
+      if (!touchCount) { palmGesture = false; blocked.clear(); touches.clear(); stopPan(); multiTouch = false }
       return // Let genuine native gestures complete their normal cleanup.
-    }
-    // Touch identifiers are not Pointer IDs. Keep independent evidence for
-    // the ellipse axes Safari exposes even when pointer geometry is absent.
-    // Never preempt an admitted native pinch's temporary page transform.
-    if (!nativePinch) {
-      let rejected = false
-      for (const touch of Array.from(event.touches)) {
-        if (palmRejection.observe(`touch:${touch.identifier}`, { width: touch.radiusX * 2, height: touch.radiusY * 2 }, Date.now())) rejected = true
-      }
-      if (rejected) { quarantineTouches(); palmGesture = true }
     }
     if (penDown || Date.now() < palmUntil || blocked.size || palmGesture) { palmGesture = true; stop(event); return }
     if (event.type === 'touchstart' && touchCount === 2) {
@@ -311,7 +287,7 @@ export function createHandwritingSession(options: {
       safe(() => finishCurrent?.(true))
       hideFeedback(); stopPan(); multiTouch = false; nativePinch = palmGesture = false; touchCount = 0
       undoGroups.length = redoGroups.length = 0; notifyHistory()
-      enabled = false; penDown = false; touches.clear(); blocked.clear(); palmUntil = 0; palmRejection.reset()
+      enabled = false; penDown = false; touches.clear(); blocked.clear(); palmUntil = 0
       scope.deselectAnnotation()
       if (previous) { scope.setLocked(previous.locked); scope.setActiveTool(previous.tool?.id || null); interaction.activate(previous.mode) }
       previous = null
@@ -331,7 +307,7 @@ export function createHandwritingSession(options: {
       finally { replaying = false; notifyHistory() }
     },
     setTool(next: HandwritingTool) { safe(() => finishCurrent?.(true)); hideFeedback(); tool = next; if (enabled) activate() },
-    setAllowTouch(value: boolean) { safe(() => finishCurrent?.(true)); allowTouch = value; touches.clear(); stopPan(); multiTouch = false; palmRejection.reset() },
+    setAllowTouch(value: boolean) { safe(() => finishCurrent?.(true)); allowTouch = value; touches.clear(); stopPan(); multiTouch = false },
     setStyle(color: string, width: number) {
       safe(() => finishCurrent?.(true))
       for (const kind of ['pen', 'highlighter'] as const) root.setToolDefaults(HANDWRITING_TOOLS[kind], { strokeColor: color, color, strokeWidth: kind === 'pen' ? width : width * 5 })
