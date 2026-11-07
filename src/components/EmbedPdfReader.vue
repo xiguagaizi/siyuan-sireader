@@ -1,5 +1,5 @@
 ﻿<template>
-  <div v-if="props.source && !pdfLoadError" ref="rootRef" class="embed-pdf-reader" :class="{ 'embed-pdf-reader--expanded': handwritingExpanded }" :style="handwritingSafeArea">
+  <div v-if="props.source && !pdfLoadError" ref="rootRef" class="embed-pdf-reader" :class="{ 'embed-pdf-reader--expanded': handwritingExpanded }" :style="handwritingViewportStyle">
     <HandwritingToolbar v-if="handwritingOpen" :tool="handwritingTool" :color="handwritingColor" :width="handwritingWidth" :allow-touch="handwritingTouch" :busy="handwritingBusy" :can-undo="handwritingHistory.canUndo" :can-redo="handwritingHistory.canRedo" :fullscreen="handwritingFullscreen" :native-fullscreen="handwritingNativeFullscreen && !handwritingExpanded" :i18n="props.i18n"
       @tool="setHandwritingTool" @color="value => { handwritingColor = value; updateHandwritingStyle() }" @width="value => { handwritingWidth = value; updateHandwritingStyle() }" @touch="value => { handwritingTouch = value; handwritingSession?.setAllowTouch(value) }" @undo="handwritingSession?.undo()" @redo="handwritingSession?.redo()" @fullscreen="toggleHandwritingFullscreen" @exit="exitHandwriting" />
     <div ref="viewerHostRef" class="embed-pdf-reader__host"></div>
@@ -52,7 +52,7 @@ const handwritingOpen = ref(false), handwritingBusy = ref(false), handwritingRea
 const handwritingTool = ref<HandwritingTool>('pen'), handwritingColor = ref('#243247'), handwritingWidth = ref(2), handwritingTouch = ref(false)
 let handwritingSession: ReturnType<typeof createHandwritingSession> | null = null
 const handwritingHistory = ref({ canUndo: false, canRedo: false })
-const { expanded: handwritingExpanded, fullscreen: handwritingFullscreen, nativeAvailable: handwritingNativeFullscreen, safeAreaStyle: handwritingSafeArea, toggle: toggleHandwritingFullscreen, restore: restoreHandwritingDisplay } = useReaderDisplay(rootRef, error => handwritingError(error))
+const { expanded: handwritingExpanded, fullscreen: handwritingFullscreen, nativeAvailable: handwritingNativeFullscreen, viewportStyle: handwritingViewportStyle, toggle: toggleHandwritingFullscreen, restore: restoreHandwritingDisplay } = useReaderDisplay(rootRef, error => handwritingError(error))
 let handwritingPending = false
 let handwritingAnnotationsReady = false, handwritingPagesReady = false
 const markHandwritingReady = () => {
@@ -1253,8 +1253,8 @@ defineExpose({ resize, flushAnnotations })
 </script>
 
 <style scoped>
-.embed-pdf-reader{box-sizing:border-box;padding:var(--reader-safe-top,0px) var(--reader-safe-right,0px) var(--reader-safe-bottom,0px) var(--reader-safe-left,0px);position:relative;width:100%;height:100%;display:flex;flex-direction:column;background:var(--b3-theme-background)}
-.embed-pdf-reader--expanded{position:fixed;top:var(--reader-viewport-top,0px);left:var(--reader-viewport-left,0px);width:var(--reader-viewport-width,100vw);height:var(--reader-viewport-height,100dvh);max-width:none;max-height:none;margin:0;border:0;z-index:1000000}
+.embed-pdf-reader{box-sizing:border-box;position:relative;width:100%;height:100%;display:flex;flex-direction:column;background:var(--b3-theme-background)}
+.embed-pdf-reader--expanded{padding:0;position:fixed;top:var(--reader-viewport-top,0px);left:var(--reader-viewport-left,0px);width:var(--reader-viewport-width,100vw);height:var(--reader-viewport-height,100dvh);max-width:none;max-height:none;margin:0;border:0;z-index:1000000}
 .embed-pdf-reader__host{position:relative;overflow:hidden;width:100%;flex:1;min-height:0}
 .embed-pdf-reader__loading{height:100%;display:flex;align-items:center;justify-content:center;color:var(--b3-theme-on-surface)}
 .embed-pdf-reader__loading--overlay{position:absolute;inset:0;background:var(--b3-theme-background);z-index:1}

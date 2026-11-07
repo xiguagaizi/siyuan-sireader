@@ -182,7 +182,7 @@ try {
   await page.getByRole('button', { name: '笔迹粗细', exact: true }).click(); await page.getByRole('menuitemradio', { name: '2 pt', exact: true }).click()
   console.log('HIGHLIGHTER width/opacity and FINGER opt-in passed')
 
-  // Reproduce Home Screen WebKit's missing API and a translucent status bar.
+  // The host uses the normal status bar layout; the reader adds no extra inset.
   await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 24, bottom: 20, left: 0, right: 0 } })
   await page.evaluate(() => {
     const original = HTMLElement.prototype.requestFullscreen
@@ -192,8 +192,8 @@ try {
     window.dispatchEvent(new Event('resize'))
   })
   await page.getByRole('button', { name: '展开阅读', exact: true }).waitFor()
-  await page.waitForFunction(() => parseFloat(getComputedStyle(document.querySelector('.embed-pdf-reader')).paddingTop) === 24)
-  assert((await page.locator('.handwriting-toolbar').boundingBox()).y >= 24)
+  await page.waitForFunction(() => parseFloat(getComputedStyle(document.querySelector('.embed-pdf-reader')).paddingTop) === 0)
+  assert.equal((await page.locator('.handwriting-toolbar').boundingBox()).y, (await page.locator('.embed-pdf-reader').boundingBox()).y)
   // A host that already starts below the status bar must not gain another gap.
   await page.evaluate(() => { const app = document.getElementById('app'); app.style.marginTop = '40px'; app.style.height = '700px'; window.dispatchEvent(new Event('resize')) })
   await page.waitForFunction(() => parseFloat(getComputedStyle(document.querySelector('.embed-pdf-reader')).paddingTop) === 0)
@@ -201,12 +201,12 @@ try {
   const originalBox = await page.locator('.embed-pdf-reader').boundingBox()
   await page.getByRole('button', { name: '展开阅读', exact: true }).click()
   await page.locator('.embed-pdf-reader--expanded').waitFor()
-  await page.waitForFunction(() => parseFloat(getComputedStyle(document.querySelector('.embed-pdf-reader')).paddingTop) === 24)
+  await page.waitForFunction(() => parseFloat(getComputedStyle(document.querySelector('.embed-pdf-reader')).paddingTop) === 0)
   assert.equal(await page.evaluate(() => !!document.fullscreenElement), false)
   assert.equal(await page.evaluate(() => window.readerBeforeExpand === window.registry), true)
   const expandedBox = await page.locator('.embed-pdf-reader').boundingBox()
   assert.equal(expandedBox.width, 1000); assert.equal(expandedBox.height, 850)
-  assert((await page.locator('.handwriting-toolbar').boundingBox()).y >= 24)
+  assert.equal((await page.locator('.handwriting-toolbar').boundingBox()).y, (await page.locator('.embed-pdf-reader').boundingBox()).y)
   await page.screenshot({ path: 'tmp/native-browser/handwriting-pwa-expanded.png' })
   await pen(400, 300); await waitSavedCount(8); await assertLastStrokeAt(400, 300)
   await page.getByRole('button', { name: '撤销', exact: true }).click(); await waitSavedCount(7)
@@ -221,7 +221,7 @@ try {
   await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 0, bottom: 0, left: 0, right: 0 } })
   await page.evaluate(() => window.dispatchEvent(new Event('resize')))
   await page.getByRole('button', { name: '全屏', exact: true }).waitFor()
-  console.log('PWA missing Fullscreen API: page expansion, safe-area offset, no duplicate gap, drawing and restore passed')
+  console.log('PWA missing Fullscreen API: page expansion without additional safe-area padding, drawing and restore passed')
 
 
   await page.evaluate(() => { window.registry.getPlugin('scroll').provides().forDocument('sireader-document').scrollToPage({ pageNumber: 1, behavior: 'instant' }); window.registry.getPlugin('zoom').provides().forDocument('sireader-document').requestZoom('fit-width') })
