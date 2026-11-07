@@ -1,6 +1,7 @@
 // The snippet's public tool factories own sampling, preview and PDF coordinates.
 // Keep raw input here: EmbedPDF 2.x strips pointerType/pressure when dispatching.
 export const TOUCH_INTENT_DELAY = 100, PEN_TOUCH_GUARD = 650, MIN_PINCH_SPAN = 80
+export const DEFAULT_HANDWRITING_COLOR = '#dc2626'
 export type HandwritingTool = 'pen' | 'highlighter' | 'eraser'
 type Point = { x: number; y: number }
 export const HANDWRITING_TOOLS = { pen: 'sireader-handwriting-pen', highlighter: 'sireader-handwriting-highlighter', eraser: 'sireader-handwriting-eraser' }
@@ -9,7 +10,7 @@ export const HANDWRITING_TOOLS = { pen: 'sireader-handwriting-pen', highlighter:
 export const createHandwritingTools = (getSession: () => ReturnType<typeof createHandwritingSession> | null, onPageReady = () => {}) => (['pen', 'highlighter', 'eraser'] as const).map(kind => ({
   id: HANDWRITING_TOOLS[kind], name: `SiReader handwriting ${kind}`, categories: ['annotation', 'markup'], matchScore: () => 0,
   interaction: { exclusive: true, cursor: kind === 'eraser' ? 'none' : 'crosshair' },
-  defaults: { type: 15, strokeColor: '#243247', color: '#243247', strokeWidth: 2, opacity: kind === 'highlighter' ? .35 : 1 },
+  defaults: { type: 15, strokeColor: DEFAULT_HANDWRITING_COLOR, color: DEFAULT_HANDWRITING_COLOR, strokeWidth: 2, opacity: kind === 'highlighter' ? .35 : 1 },
   behavior: { deactivateToolAfterCreate: false, selectAfterCreate: false, editAfterCreate: false },
   pointerHandler: { annotationType: 15, create(context: any) {
     // The PDF document can load before its page's DOM event providers mount.
@@ -51,7 +52,7 @@ export const hitsHandwriting = (a: any, from: Point, to: Point, radius: number) 
 }
 
 export function createHandwritingSession(options: {
-  registry: any; documentId: string; host: HTMLElement; onError: (error: unknown) => void; onHistoryChange?: (state: { canUndo: boolean; canRedo: boolean }) => void
+  registry: any; documentId: string; host: HTMLElement; onError: (error: unknown) => void; onHistoryChange?: (state: { canUndo: boolean; canRedo: boolean }) => void; onInputChange?: (pointerType: string) => void
 }) {
   const { registry, documentId, host, onError } = options
   const capability = (id: string) => registry.getPlugin(id)?.provides()
@@ -66,6 +67,8 @@ export function createHandwritingSession(options: {
   let enabled = false, disposed = false, tool: HandwritingTool = 'pen', allowTouch = false
   let capturedId: number | null = null
   let raw: PointerEvent | null = null, penDown = false, palmUntil = 0
+  let lastInput = ''
+  const reportInput = (type: string) => { if (type !== lastInput) { lastInput = type; options.onInputChange?.(type) } }
   let previous: { tool: any; mode: string; locked: any } | null = null
   let finishCurrent: ((commit: boolean) => void) | null = null
   let pan: { x: number; y: number; left: number; top: number; readyAt: number } | null = null
@@ -170,6 +173,9 @@ export function createHandwritingSession(options: {
         if (!touches.size) { stopPan(); multiTouch = false }
       }
     }
+    // UI only: rejected palm contacts returned above must not reveal overlays
+    // during pen input. Never suppress the page's drawing/navigation events.
+    if (event.type === 'pointerdown' || event.type === 'pointermove' || (event.type === 'pointerover' && event.pointerType !== 'touch')) reportInput(event.pointerType)
   }
   // Classify the touch group before native pinch sees touchstart. Cancelling
   // only after its preview begins can shift ink or commit a spurious zoom.
@@ -276,6 +282,7 @@ export function createHandwritingSession(options: {
       previous = { tool: scope.getActiveTool(), mode: interaction.getActiveMode(), locked: scope.getLocked() }
       undoGroups.length = redoGroups.length = 0; notifyHistory()
       enabled = true; tool = 'pen'; scope.setLocked({ type: 'all' }); activate()
+      reportInput('pen')
       if (scope.getActiveTool()?.id !== HANDWRITING_TOOLS.pen) {
         this.exit()
         throw new Error('This PDF does not allow annotation changes')
@@ -287,7 +294,7 @@ export function createHandwritingSession(options: {
       safe(() => finishCurrent?.(true))
       hideFeedback(); stopPan(); multiTouch = false; nativePinch = palmGesture = false; touchCount = 0
       undoGroups.length = redoGroups.length = 0; notifyHistory()
-      enabled = false; penDown = false; touches.clear(); blocked.clear(); palmUntil = 0
+      enabled = false; penDown = false; touches.clear(); blocked.clear(); palmUntil = 0; lastInput = ''
       scope.deselectAnnotation()
       if (previous) { scope.setLocked(previous.locked); scope.setActiveTool(previous.tool?.id || null); interaction.activate(previous.mode) }
       previous = null

@@ -24,7 +24,7 @@ import { isMobile } from '@/utils/mobile'
 import Translate from './Translate.vue'
 import HandwritingToolbar from './HandwritingToolbar.vue'
 import { useReaderDisplay } from '@/handwriting/display'
-import { createHandwritingSession, createHandwritingTools, type HandwritingTool } from '@/handwriting/session'
+import { createHandwritingSession, createHandwritingTools, DEFAULT_HANDWRITING_COLOR, type HandwritingTool } from '@/handwriting/session'
 import { createPdfReflowSession, replacePdfDocument, synchronizeReflowAnnotation } from '@/services/pdfReflow'
 import type { ReflowDocument } from '@/core/pdfReflow'
 import { pdfQuickSendCommandId } from '@/utils/keyboard'
@@ -49,7 +49,7 @@ const rootRef = ref<HTMLElement | null>(null)
 const viewerHostRef = ref<HTMLElement | null>(null)
 const documentId = 'sireader-document'
 const handwritingOpen = ref(false), handwritingBusy = ref(false), handwritingReady = ref(false)
-const handwritingTool = ref<HandwritingTool>('pen'), handwritingColor = ref('#243247'), handwritingWidth = ref(2), handwritingTouch = ref(false)
+const handwritingTool = ref<HandwritingTool>('pen'), handwritingColor = ref(DEFAULT_HANDWRITING_COLOR), handwritingWidth = ref(2), handwritingTouch = ref(false)
 let handwritingSession: ReturnType<typeof createHandwritingSession> | null = null
 const handwritingHistory = ref({ canUndo: false, canRedo: false })
 const { expanded: handwritingExpanded, fullscreen: handwritingFullscreen, nativeAvailable: handwritingNativeFullscreen, viewportStyle: handwritingViewportStyle, toggle: toggleHandwritingFullscreen, restore: restoreHandwritingDisplay } = useReaderDisplay(rootRef, error => handwritingError(error))
@@ -69,7 +69,7 @@ const enterHandwriting = () => {
   if (handwritingOpen.value) return
   if (!handwritingReady.value || !activeRegistry || !viewerHostRef.value) { handwritingPending = true; return }
   try {
-    handwritingSession ||= createHandwritingSession({ registry: activeRegistry, documentId, host: viewerHostRef.value, onError: handwritingError, onHistoryChange: state => { handwritingHistory.value = state } })
+    handwritingSession ||= createHandwritingSession({ registry: activeRegistry, documentId, host: viewerHostRef.value, onError: handwritingError, onHistoryChange: state => { handwritingHistory.value = state }, onInputChange: type => activeContainer?.setAttribute('data-sireader-handwriting-input', type) })
     handwritingSession.enter()
     handwritingSession.setAllowTouch(handwritingTouch.value)
     updateHandwritingStyle()
@@ -89,6 +89,7 @@ const exitHandwriting = async () => {
     handwritingSession?.exit()
     handwritingOpen.value = false
     activeContainer?.removeAttribute('data-sireader-handwriting')
+    activeContainer?.removeAttribute('data-sireader-handwriting-input')
     syncPdfAnnotationsHidden(!!props.hideAnnotations)
     await restoreHandwritingDisplay()
   } catch (error) { handwritingError(error) }
@@ -101,6 +102,7 @@ const disposeHandwriting = () => {
   handwritingPending = false
   handwritingAnnotationsReady = handwritingPagesReady = false
   activeContainer?.removeAttribute('data-sireader-handwriting')
+  activeContainer?.removeAttribute('data-sireader-handwriting-input')
 }
 
 const pdfLoadFailedMessage = () => props.i18n?.loadFailed || 'PDF load failed'
@@ -222,6 +224,7 @@ const disposePdfViewer = () => {
 }
 
 const PDF_PAGE_THEME_STYLE = `
+  :host([data-sireader-handwriting][data-sireader-handwriting-input="pen"]) [data-overlay-id="page-controls"]{display:none!important}
   :host([data-sireader-handwriting]) [data-epdf-i="main-toolbar"],
   :host([data-sireader-handwriting]) [data-epdf-i="annotation-toolbar"]{display:none!important}
 
