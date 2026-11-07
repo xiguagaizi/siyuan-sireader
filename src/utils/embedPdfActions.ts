@@ -27,8 +27,11 @@ export const ensureEmbedPdfRuntime = () =>
     throw error
   })
 
-export const initEmbedPdfViewer = async (target: HTMLElement, config: Record<string, any>) =>
-  (await ensureEmbedPdfRuntime()).default.init({ type: 'container', target, ...config })
+export const initEmbedPdfViewer = async (target: HTMLElement, config: Record<string, any>) => {
+  const runtime = await ensureEmbedPdfRuntime()
+  runtime.registerIcon('sireaderHandwriting', { path: 'm16 3 5 5-12 12-6 1 1-6Z M14 5l5 5', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round' })
+  return runtime.default.init({ type: 'container', target, ...config })
+}
 
 export const ensureEmbedPdfStampManifests = async () =>
   [{ url: STAMP_PLUGIN_MANIFEST, fallbackLocale: 'en' }]

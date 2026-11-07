@@ -5,11 +5,21 @@ import { createHandwritingSession, createHandwritingTools, HANDWRITING_TOOLS, hi
 const ink = (id = 'hand') => ({ type: 15, id, pageIndex: 0, strokeWidth: 2, custom: { sireaderHandwriting: 1 }, inkList: [{ points: [{ x: 0, y: 50 }, { x: 100, y: 50 }] }] })
 function fixture() {
   const host = document.createElement('div'), tools = new Map<string, any>(), objects: any[] = [], commits: any[] = []
+  const commands: any[] = [], listeners = new Set<(event: any) => void>()
+  let historyIndex = -1
+  const changed = () => listeners.forEach(fn => fn('annotations'))
+  const history = {
+    register(command: any) { commands.splice(++historyIndex); commands.push(command); command.execute(); changed() },
+    undo() { if (historyIndex >= 0) { commands[historyIndex--].undo(); changed() } },
+    redo() { if (historyIndex + 1 < commands.length) { commands[++historyIndex].execute(); changed() } },
+    onHistoryChange(fn: (event: any) => void) { listeners.add(fn); return () => listeners.delete(fn) },
+  }
+  const historyState = vi.fn()
   let selected: any = { id: 'old-tool' }, lock: any = { type: 'none' }, mode = 'panMode'
   const scope = {
     getActiveTool: () => selected, setActiveTool: vi.fn((id: string) => { selected = id && (tools.get(id) || { id }); mode = id ? 'annotation:' + id : 'panMode' }),
     getLocked: () => lock, setLocked: (next: any) => { lock = next }, deselectAnnotation: vi.fn(),
-    getAnnotations: () => objects.map(object => ({ object })), deleteAnnotations: vi.fn((items: any[]) => items.forEach(item => objects.splice(objects.findIndex(a => a.id === item.id), 1))),
+    getAnnotations: () => objects.map(object => ({ object })), deleteAnnotations: vi.fn((items: any[]) => items.forEach(item => { const object = objects.find(a => a.id === item.id); if (object) history.register({ execute: () => objects.splice(objects.findIndex(a => a.id === item.id), 1), undo: () => objects.push(object) }) })),
     onActiveToolChange: () => vi.fn(),
   }
   const pointerHandler = { create: (context: any) => {
@@ -26,15 +36,15 @@ function fixture() {
   const metrics = { scrollLeft: 0, scrollTop: 200 }
   const viewport = { getMetrics: () => metrics, scrollTo: vi.fn((pos: any) => Object.assign(metrics, { scrollLeft: pos.x, scrollTop: pos.y })) }
   const interaction = { getActiveMode: () => mode, activate: (next: string) => { mode = next } }
-  const caps: any = { annotation: root, viewport: { forDocument: () => viewport }, 'interaction-manager': { forDocument: () => interaction } }
+  const caps: any = { history: { forDocument: () => history }, annotation: root, viewport: { forDocument: () => viewport }, 'interaction-manager': { forDocument: () => interaction } }
   const error = vi.fn()
   let session: ReturnType<typeof createHandwritingSession>
   createHandwritingTools(() => session).forEach(tool => root.addTool(tool))
-  session = createHandwritingSession({ registry: { getPlugin: (id: string) => ({ provides: () => caps[id] }) }, documentId: 'test', host, onError: error })
+  session = createHandwritingSession({ registry: { getPlugin: (id: string) => ({ provides: () => caps[id] }) }, documentId: 'test', host, onError: error, onHistoryChange: historyState })
   let handler: any
   const choose = (kind: 'pen' | 'eraser' | 'highlighter') => {
     session.setTool(kind)
-    handler = tools.get(HANDWRITING_TOOLS[kind]).pointerHandler.create({ getTool: () => selected, pageIndex: 0, scale: 1, pageSize: { width: 600, height: 800 }, onPreview: vi.fn(), onCommit: (a: any) => { commits.push(a); objects.push(a) } })
+    handler = tools.get(HANDWRITING_TOOLS[kind]).pointerHandler.create({ getTool: () => selected, pageIndex: 0, scale: 1, pageSize: { width: 600, height: 800 }, onPreview: vi.fn(), onCommit: (a: any) => { commits.push(a); history.register({ execute: () => objects.push(a), undo: () => objects.splice(objects.findIndex(o => o.id === a.id), 1) }) } })
   }
   const send = (type: string, pointerType: string, x: number, y: number, pointerId = 1, button = 0) => {
     const event = new Event(type, { bubbles: true, cancelable: true }) as any
@@ -43,7 +53,7 @@ function fixture() {
     if (allowed) handler[({ pointerdown: 'onPointerDown', pointermove: 'onPointerMove', pointerup: 'onPointerUp', pointercancel: 'onPointerCancel' } as any)[type]]?.({ x, y }, { setPointerCapture: vi.fn(), releasePointerCapture: vi.fn() }, '')
   }
   session.enter(); choose('pen')
-  return { host, session, scope, tools, commits, objects, choose, send, viewport, error, mode: () => mode, lock: () => lock }
+  return { host, session, scope, tools, commits, objects, choose, send, viewport, error, history, historyState, mode: () => mode, lock: () => lock }
 }
 
 describe('stroke eraser geometry', () => {
@@ -150,4 +160,70 @@ test('highlighter has its own translucent defaults without changing native tools
   f.send('pointerdown', 'mouse', 5, 5); f.send('pointerup', 'mouse', 15, 15)
   expect(f.commits[0]).toMatchObject({ opacity: .35, strokeWidth: 15, strokeColor: '#ffe066' })
   expect(f.tools.get('inkHighlighter').defaults.opacity).toBe(1)
+})
+
+
+test('LAN HTTP without randomUUID still creates distinct stroke IDs', () => {
+  const getRandomValues = globalThis.crypto.getRandomValues.bind(globalThis.crypto)
+  vi.stubGlobal('crypto', { getRandomValues })
+  try {
+    const f = fixture()
+    for (let i = 0; i < 2; i++) { f.send('pointerdown', 'mouse', 5, 5); f.send('pointerup', 'mouse', 15, 15) }
+    expect(f.commits).toHaveLength(2)
+    expect(f.commits[0].id).toMatch(/^[0-9a-f]{32}$/)
+    expect(f.commits[0].id).not.toBe(f.commits[1].id)
+    expect(f.error).not.toHaveBeenCalled()
+  } finally { vi.unstubAllGlobals() }
+})
+
+
+test('undo/redo groups all strokes erased in one gesture and protects older native edits', () => {
+  const f = fixture()
+  f.history.register({ execute() {}, undo() { throw new Error('must not undo old native history') } })
+  f.send('pointerdown', 'pen', 0, 40); f.send('pointerup', 'pen', 100, 40)
+  f.send('pointerdown', 'pen', 0, 60); f.send('pointerup', 'pen', 100, 60)
+  const ids = f.objects.map(a => a.id)
+  f.choose('eraser')
+  f.send('pointerdown', 'mouse', 50, 20); f.send('pointermove', 'mouse', 50, 80); f.send('pointerup', 'mouse', 50, 80)
+  expect(f.objects).toHaveLength(0)
+  f.session.undo(); expect(f.objects.map(a => a.id).sort()).toEqual([...ids].sort())
+  f.session.redo(); expect(f.objects).toHaveLength(0)
+  f.session.undo(); f.session.undo(); f.session.undo(); f.session.undo()
+  expect(f.objects).toHaveLength(0)
+  expect(f.historyState).toHaveBeenLastCalledWith({ canUndo: false, canRedo: true })
+  f.session.redo(); expect(f.objects).toHaveLength(1)
+  f.choose('pen'); f.send('pointerdown', 'pen', 10, 100); f.send('pointerup', 'pen', 30, 100)
+  expect(f.historyState).toHaveBeenLastCalledWith({ canUndo: true, canRedo: false })
+})
+
+test('external/native history changes invalidate the handwriting gesture boundary', () => {
+  const f = fixture()
+  f.send('pointerdown', 'pen', 0, 40); f.send('pointerup', 'pen', 100, 40)
+  f.history.undo()
+  expect(f.historyState).toHaveBeenLastCalledWith({ canUndo: false, canRedo: false })
+  f.session.redo(); expect(f.objects).toHaveLength(0)
+})
+
+test('finger pan uses its initial origin even when viewport metrics have not updated', () => {
+  const f = fixture()
+  f.viewport.scrollTo.mockImplementation(() => {})
+  f.send('pointerdown', 'touch', 10, 100, 2)
+  f.send('pointermove', 'touch', 10, 80, 2); f.send('pointermove', 'touch', 10, 50, 2)
+  expect(f.viewport.scrollTo).toHaveBeenLastCalledWith({ x: 0, y: 250, behavior: 'instant' })
+  f.send('pointerdown', 'touch', 80, 100, 3); f.send('pointerup', 'touch', 80, 100, 3)
+  const count = f.viewport.scrollTo.mock.calls.length
+  f.send('pointermove', 'touch', 10, 30, 2)
+  expect(f.viewport.scrollTo).toHaveBeenCalledTimes(count)
+})
+
+test('eraser ring and swept trail follow input and are removed on exit', () => {
+  const f = fixture(); f.choose('eraser')
+  f.send('pointerdown', 'mouse', 20, 30); f.send('pointermove', 'mouse', 60, 70)
+  const feedback = f.host.querySelector<SVGSVGElement>('.handwriting-eraser-feedback')!
+  expect(feedback.style.display).toBe('')
+  expect(feedback.querySelector('circle')?.getAttribute('cx')).toBe('60')
+  expect(feedback.querySelector('path')?.getAttribute('d')).toBe('M20 30 L60 70')
+  f.send('pointerup', 'mouse', 60, 70)
+  f.session.exit(); expect(feedback.style.display).toBe('none')
+  f.session.dispose(); expect(f.host.querySelector('.handwriting-eraser-feedback')).toBeNull()
 })

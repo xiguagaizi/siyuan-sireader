@@ -1,7 +1,7 @@
 ﻿<template>
   <div v-if="props.source && !pdfLoadError" ref="rootRef" class="embed-pdf-reader">
-    <HandwritingToolbar v-if="handwritingOpen" :tool="handwritingTool" :color="handwritingColor" :width="handwritingWidth" :allow-touch="handwritingTouch" :busy="handwritingBusy" :i18n="props.i18n"
-      @tool="setHandwritingTool" @color="value => { handwritingColor = value; updateHandwritingStyle() }" @width="value => { handwritingWidth = value; updateHandwritingStyle() }" @touch="value => { handwritingTouch = value; handwritingSession?.setAllowTouch(value) }" @exit="exitHandwriting" />
+    <HandwritingToolbar v-if="handwritingOpen" :tool="handwritingTool" :color="handwritingColor" :width="handwritingWidth" :allow-touch="handwritingTouch" :busy="handwritingBusy" :can-undo="handwritingHistory.canUndo" :can-redo="handwritingHistory.canRedo" :fullscreen="handwritingFullscreen" :i18n="props.i18n"
+      @tool="setHandwritingTool" @color="value => { handwritingColor = value; updateHandwritingStyle() }" @width="value => { handwritingWidth = value; updateHandwritingStyle() }" @touch="value => { handwritingTouch = value; handwritingSession?.setAllowTouch(value) }" @undo="handwritingSession?.undo()" @redo="handwritingSession?.redo()" @fullscreen="toggleHandwritingFullscreen" @exit="exitHandwriting" />
     <div ref="viewerHostRef" class="embed-pdf-reader__host"></div>
     <div v-if="pdfPreparing" class="embed-pdf-reader__loading embed-pdf-reader__loading--overlay">{{ pdfPreparing }}</div>
   </div>
@@ -50,21 +50,32 @@ const documentId = 'sireader-document'
 const handwritingOpen = ref(false), handwritingBusy = ref(false), handwritingReady = ref(false)
 const handwritingTool = ref<HandwritingTool>('pen'), handwritingColor = ref('#243247'), handwritingWidth = ref(2), handwritingTouch = ref(false)
 let handwritingSession: ReturnType<typeof createHandwritingSession> | null = null
+const handwritingHistory = ref({ canUndo: false, canRedo: false }), handwritingFullscreen = ref(false)
+let handwritingPending = false
 let handwritingAnnotationsReady = false, handwritingPagesReady = false
+const onFullscreenChange = () => { handwritingFullscreen.value = document.fullscreenElement === rootRef.value }
+const toggleHandwritingFullscreen = async () => {
+  try { if (document.fullscreenElement === rootRef.value) await document.exitFullscreen(); else await rootRef.value?.requestFullscreen() }
+  catch (error) { handwritingError(error) }
+}
+// Fullscreen the Vue reader root so its independent toolbar is included.
+document.addEventListener('fullscreenchange', onFullscreenChange)
+onBeforeUnmount(() => document.removeEventListener('fullscreenchange', onFullscreenChange))
 const markHandwritingReady = () => {
   handwritingAnnotationsReady = true
   if (!handwritingPagesReady) return
   handwritingReady.value = true
-  if (activeRegistry) getCapability<any>(activeRegistry, 'commands')?.enableCategory('sireader-handwriting')
+  if (handwritingPending) { handwritingPending = false; enterHandwriting() }
 }
 const markHandwritingPageReady = () => { handwritingPagesReady = true; if (handwritingAnnotationsReady) markHandwritingReady() }
 const handwritingError = (error: any) => { diagnosticLog('error', 'pdf.handwriting.failed', { error }); showMessage(error?.message || '手写操作失败，请重试', 4000, 'error') }
 const updateHandwritingStyle = () => handwritingSession?.setStyle(handwritingColor.value, handwritingWidth.value)
 const setHandwritingTool = (tool: HandwritingTool) => { handwritingTool.value = tool; handwritingSession?.setTool(tool) }
 const enterHandwriting = () => {
-  if (!handwritingReady.value || !activeRegistry || !viewerHostRef.value || handwritingOpen.value) return
+  if (handwritingOpen.value) return
+  if (!handwritingReady.value || !activeRegistry || !viewerHostRef.value) { handwritingPending = true; return }
   try {
-    handwritingSession ||= createHandwritingSession({ registry: activeRegistry, documentId, host: viewerHostRef.value, onError: handwritingError })
+    handwritingSession ||= createHandwritingSession({ registry: activeRegistry, documentId, host: viewerHostRef.value, onError: handwritingError, onHistoryChange: state => { handwritingHistory.value = state } })
     handwritingSession.enter()
     handwritingSession.setAllowTouch(handwritingTouch.value)
     updateHandwritingStyle()
@@ -83,6 +94,7 @@ const exitHandwriting = async () => {
     await flushAnnotations()
     handwritingSession?.exit()
     handwritingOpen.value = false
+    if (document.fullscreenElement === rootRef.value) await document.exitFullscreen()
     activeContainer?.removeAttribute('data-sireader-handwriting')
     syncPdfAnnotationsHidden(!!props.hideAnnotations)
   } catch (error) { handwritingError(error) }
@@ -91,6 +103,7 @@ const exitHandwriting = async () => {
 const disposeHandwriting = () => {
   handwritingSession?.dispose(); handwritingSession = null
   handwritingOpen.value = false; handwritingReady.value = false
+  handwritingPending = false
   handwritingAnnotationsReady = handwritingPagesReady = false
   activeContainer?.removeAttribute('data-sireader-handwriting')
 }
@@ -704,8 +717,7 @@ const setupPdfCommands = (registry: PluginRegistry) => {
     showMessage(props.i18n?.capture || 'Drag to select a screenshot area', 1500)
     },
   })
-  if (!handwritingReady.value) rawCommands?.disableCategory('sireader-handwriting')
-  definitions.push({ id: 'sireader:handwriting', label: props.i18n?.pdfHandwriting || '手写笔记', icon: 'pencil', categories: ['tools', 'sireader-handwriting'], action: enterHandwriting })
+  definitions.push({ id: 'sireader:handwriting', label: props.i18n?.pdfHandwriting || '手写笔记', icon: 'sireaderHandwriting', categories: ['tools'], action: enterHandwriting })
   const installed = installPdfCommands(rawCommands, definitions, (error: any) => showMessage(error?.message || props.i18n?.pdfOperationFailed || 'PDF operation failed', 2500, 'error'))
   const schema = ui?.getSchema?.()
   const annotationMenu = schema?.selectionMenus?.annotation
@@ -714,14 +726,17 @@ const setupPdfCommands = (registry: PluginRegistry) => {
   const toolbars = { ...schema?.toolbars }
   const mainToolbar = toolbars['main-toolbar']
   const mainGroup = mainToolbar?.items?.find((item: any) => item.id === 'center-group')
-  if (mainToolbar && mainGroup && !mainGroup.items.some((item: any) => item.id === 'sireader-lock-annotation-tool')) {
+  const extraTools = [
+    { type: 'command-button', id: 'sireader-handwriting', commandId: 'sireader:handwriting', variant: 'icon-text', categories: ['tools'] },
+    { type: 'command-button', id: 'sireader-pdf-reflow', commandId: 'sireader:pdf-reflow', variant: 'icon', categories: ['tools'] },
+    { type: 'command-button', id: 'sireader-lock-annotation-tool', commandId: 'sireader:lock-annotation-tool', variant: 'icon', categories: ['tools'] },
+  ].filter(button => !mainGroup?.items.some((item: any) => item.id === button.id))
+  if (mainToolbar && mainGroup && extraTools.length) {
     const panIndex = mainGroup.items.findIndex((item: any) => item.id === 'pan-button')
     const lockIndex = panIndex > 0 && mainGroup.items[panIndex - 1]?.type === 'divider' ? panIndex - 1 : panIndex
     toolbars['main-toolbar'] = { ...mainToolbar, items: mainToolbar.items.map((item: any) => item.id === 'center-group' ? { ...item, items: [
       ...item.items.slice(0, lockIndex),
-      { type: 'command-button', id: 'sireader-handwriting', commandId: 'sireader:handwriting', variant: 'icon-text', categories: ['tools'] },
-      { type: 'command-button', id: 'sireader-pdf-reflow', commandId: 'sireader:pdf-reflow', variant: 'icon', categories: ['tools'] },
-      { type: 'command-button', id: 'sireader-lock-annotation-tool', commandId: 'sireader:lock-annotation-tool', variant: 'icon', categories: ['tools'] },
+      ...extraTools,
       ...item.items.slice(lockIndex),
     ] } : item) }
   }
@@ -1244,7 +1259,7 @@ defineExpose({ resize, flushAnnotations })
 
 <style scoped>
 .embed-pdf-reader{position:relative;width:100%;height:100%;display:flex;flex-direction:column;background:var(--b3-theme-background)}
-.embed-pdf-reader__host{width:100%;flex:1;min-height:0}
+.embed-pdf-reader__host{position:relative;overflow:hidden;width:100%;flex:1;min-height:0}
 .embed-pdf-reader__loading{height:100%;display:flex;align-items:center;justify-content:center;color:var(--b3-theme-on-surface)}
 .embed-pdf-reader__loading--overlay{position:absolute;inset:0;background:var(--b3-theme-background);z-index:1}
 </style>
