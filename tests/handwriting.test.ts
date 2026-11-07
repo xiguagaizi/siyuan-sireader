@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
-import { describe, expect, test, vi } from 'vitest'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 import { createHandwritingSession, createHandwritingTools, HANDWRITING_TOOLS, hitsHandwriting, segmentsDistance } from '../src/handwriting/session'
+
+afterEach(() => vi.useRealTimers())
 
 const ink = (id = 'hand') => ({ type: 15, id, pageIndex: 0, strokeWidth: 2, custom: { sireaderHandwriting: 1 }, inkList: [{ points: [{ x: 0, y: 50 }, { x: 100, y: 50 }] }] })
 function fixture() {
@@ -52,8 +54,13 @@ function fixture() {
     const allowed = host.dispatchEvent(event)
     if (allowed) handler[({ pointerdown: 'onPointerDown', pointermove: 'onPointerMove', pointerup: 'onPointerUp', pointercancel: 'onPointerCancel' } as any)[type]]?.({ x, y }, { setPointerCapture: vi.fn(), releasePointerCapture: vi.fn() }, '')
   }
+  const touch = (type: string, points: number[][]) => {
+    const event = new Event(type, { bubbles: true, cancelable: true }) as any
+    Object.assign(event, { touches: points.map(([clientX, clientY], identifier) => ({ clientX, clientY, identifier })) })
+    return host.dispatchEvent(event)
+  }
   session.enter(); choose('pen')
-  return { host, session, scope, tools, commits, objects, choose, send, viewport, error, history, historyState, mode: () => mode, lock: () => lock }
+  return { host, session, scope, tools, commits, objects, choose, send, touch, viewport, error, history, historyState, mode: () => mode, lock: () => lock }
 }
 
 describe('stroke eraser geometry', () => {
@@ -79,8 +86,9 @@ test('consecutive pen strokes commit at pen-up without timers or tool changes', 
 })
 
 test('finger scrolls without ink, and two fingers stop single-finger panning', () => {
+  vi.useFakeTimers()
   const f = fixture()
-  f.send('pointerdown', 'touch', 10, 100, 2); f.send('pointermove', 'touch', 10, 60, 2)
+  f.send('pointerdown', 'touch', 10, 100, 2); vi.advanceTimersByTime(120); f.send('pointermove', 'touch', 10, 60, 2)
   expect(f.viewport.getMetrics().scrollTop).toBe(240)
   f.send('pointerdown', 'touch', 80, 100, 3); f.send('pointermove', 'touch', 10, 50, 2)
   expect(f.viewport.getMetrics().scrollTop).toBe(240)
@@ -205,9 +213,11 @@ test('external/native history changes invalidate the handwriting gesture boundar
 })
 
 test('finger pan uses its initial origin even when viewport metrics have not updated', () => {
+  vi.useFakeTimers()
   const f = fixture()
   f.viewport.scrollTo.mockImplementation(() => {})
   f.send('pointerdown', 'touch', 10, 100, 2)
+  vi.advanceTimersByTime(120)
   f.send('pointermove', 'touch', 10, 80, 2); f.send('pointermove', 'touch', 10, 50, 2)
   expect(f.viewport.scrollTo).toHaveBeenLastCalledWith({ x: 0, y: 250, behavior: 'instant' })
   f.send('pointerdown', 'touch', 80, 100, 3); f.send('pointerup', 'touch', 80, 100, 3)
@@ -226,4 +236,126 @@ test('eraser ring and swept trail follow input and are removed on exit', () => {
   f.send('pointerup', 'mouse', 60, 70)
   f.session.exit(); expect(feedback.style.display).toBe('none')
   f.session.dispose(); expect(f.host.querySelector('.handwriting-eraser-feedback')).toBeNull()
+})
+
+
+test('adjacent supporting fingers never reach navigation even when the pen never touches', () => {
+  vi.useFakeTimers()
+  const f = fixture()
+  f.send('pointerdown', 'touch', 100, 150, 2)
+  vi.advanceTimersByTime(50); f.send('pointermove', 'touch', 100, 140, 2)
+  f.send('pointerdown', 'touch', 125, 155, 3)
+  expect(f.touch('touchstart', [[100, 140], [125, 155]])).toBe(false)
+  vi.advanceTimersByTime(1000)
+  f.send('pointermove', 'touch', 80, 100, 2); f.send('pointermove', 'touch', 220, 100, 3)
+  expect(f.touch('touchmove', [[80, 100], [220, 100]])).toBe(false)
+  expect(f.viewport.scrollTo).not.toHaveBeenCalled()
+  expect(f.commits).toHaveLength(0)
+  f.session.dispose()
+})
+
+test('hover rejects a single support touch without requiring pen-down or adding ink', () => {
+  vi.useFakeTimers()
+  const f = fixture()
+  f.send('pointerover', 'pen', 200, 20)
+  f.send('pointerdown', 'touch', 20, 150, 2)
+  expect(f.touch('touchstart', [[20, 150]])).toBe(false)
+  vi.advanceTimersByTime(1000)
+  f.send('pointermove', 'touch', 20, 100, 2)
+  expect(f.touch('touchmove', [[20, 100]])).toBe(false)
+  expect(f.viewport.scrollTo).not.toHaveBeenCalled(); expect(f.commits).toHaveLength(0)
+  f.session.dispose()
+})
+
+test('an incipient support drag yields to hover before the navigation deadline', () => {
+  vi.useFakeTimers()
+  const f = fixture()
+  f.send('pointerdown', 'touch', 20, 150, 2)
+  vi.advanceTimersByTime(60); f.send('pointermove', 'touch', 20, 100, 2)
+  expect(f.viewport.scrollTo).not.toHaveBeenCalled()
+  f.send('pointermove', 'pen', 200, 40)
+  vi.advanceTimersByTime(1000)
+  f.send('pointermove', 'touch', 20, 50, 2)
+  expect(f.viewport.scrollTo).not.toHaveBeenCalled(); expect(f.commits).toHaveLength(0)
+  f.session.dispose()
+})
+
+test('close palm contacts yield to pen and remain blocked through pen-up and extra contacts', () => {
+  vi.useFakeTimers()
+  const f = fixture()
+  f.send('pointerdown', 'touch', 20, 150, 2); f.send('pointerdown', 'touch', 45, 155, 3)
+  f.touch('touchstart', [[20, 150], [45, 155]])
+  f.send('pointerdown', 'pen', 200, 20); f.send('pointerup', 'pen', 230, 30)
+  expect(f.commits).toHaveLength(1)
+  vi.advanceTimersByTime(1000)
+  f.send('pointerdown', 'touch', 80, 100, 4)
+  f.send('pointerup', 'touch', 20, 150, 2); f.send('pointerup', 'touch', 45, 155, 3)
+  f.send('pointermove', 'touch', 80, 20, 4)
+  expect(f.viewport.scrollTo).not.toHaveBeenCalled()
+  f.send('pointerup', 'touch', 80, 20, 4); f.touch('touchend', [])
+  f.send('pointerdown', 'touch', 10, 100, 5); vi.advanceTimersByTime(120); f.send('pointermove', 'touch', 10, 60, 5)
+  expect(f.viewport.getMetrics().scrollTop).toBe(240)
+  f.session.dispose()
+})
+
+test('pointer cancellation cannot revive quarantined Touch Events before the whole group leaves', () => {
+  vi.useFakeTimers()
+  const f = fixture()
+  f.send('pointerdown', 'touch', 100, 100, 2); f.send('pointerdown', 'touch', 125, 105, 3)
+  expect(f.touch('touchstart', [[100, 100], [125, 105]])).toBe(false)
+  f.send('pointercancel', 'touch', 100, 100, 2); f.send('pointercancel', 'touch', 125, 105, 3)
+  vi.advanceTimersByTime(1000)
+  expect(f.touch('touchmove', [[80, 100], [320, 100]])).toBe(false)
+  expect(f.touch('touchend', [])).toBe(true)
+  f.send('pointerdown', 'touch', 100, 100, 5); f.send('pointerdown', 'touch', 300, 100, 6)
+  expect(f.touch('touchstart', [[100, 100], [300, 100]])).toBe(true)
+  expect(f.touch('touchmove', [[80, 100], [320, 100]])).toBe(true)
+  f.session.dispose()
+})
+
+test('pen replaces an unfinished finger-writing draft while a real pinch keeps its native ownership', () => {
+  const f = fixture(); f.session.setAllowTouch(true)
+  f.send('pointerdown', 'touch', 20, 150, 2); f.send('pointermove', 'touch', 20, 100, 2)
+  f.send('pointerdown', 'pen', 200, 20); f.send('pointerup', 'pen', 220, 25)
+  expect(f.commits).toHaveLength(1)
+  expect(f.commits[0].inkList[0].points[0]).toEqual({ x: 200, y: 20 })
+  f.session.dispose()
+  const g = fixture()
+  g.send('pointerdown', 'touch', 100, 100, 2); g.send('pointerdown', 'touch', 300, 100, 3)
+  expect(g.touch('touchstart', [[100, 100], [300, 100]])).toBe(true)
+  g.send('pointerdown', 'pen', 200, 20); g.send('pointerup', 'pen', 220, 25)
+  expect(g.commits).toHaveLength(0)
+  g.send('pointerup', 'touch', 100, 100, 2); g.send('pointerup', 'touch', 300, 100, 3); g.touch('touchend', [])
+  g.send('pointerdown', 'pen', 200, 20); g.send('pointerup', 'pen', 220, 25)
+  expect(g.commits).toHaveLength(1)
+  g.session.dispose()
+})
+
+test('pen-up guards a later support touch and exit cancels buffered panning', () => {
+  vi.useFakeTimers()
+  const f = fixture()
+  f.send('pointerdown', 'pen', 200, 20); f.send('pointerup', 'pen', 220, 25)
+  vi.advanceTimersByTime(400)
+  f.send('pointerdown', 'touch', 20, 150, 2)
+  vi.advanceTimersByTime(1000); f.send('pointermove', 'touch', 20, 100, 2)
+  expect(f.viewport.scrollTo).not.toHaveBeenCalled()
+  f.session.dispose()
+  const g = fixture()
+  g.send('pointerdown', 'touch', 20, 150, 2); g.send('pointermove', 'touch', 20, 100, 2)
+  g.session.dispose(); vi.advanceTimersByTime(1000)
+  expect(g.viewport.scrollTo).not.toHaveBeenCalled()
+})
+
+
+test('a quick deliberate swipe finishes within the intent window without getting discarded', () => {
+  vi.useFakeTimers()
+  const f = fixture()
+  f.send('pointerdown', 'touch', 20, 150, 2)
+  vi.advanceTimersByTime(40); f.send('pointermove', 'touch', 20, 110, 2)
+  expect(f.viewport.scrollTo).not.toHaveBeenCalled()
+  f.send('pointerup', 'touch', 20, 100, 2)
+  expect(f.viewport.getMetrics().scrollTop).toBe(250)
+  vi.advanceTimersByTime(1000)
+  expect(f.viewport.scrollTo).toHaveBeenCalledTimes(1)
+  f.session.dispose()
 })

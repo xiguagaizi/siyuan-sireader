@@ -1,5 +1,6 @@
 // The snippet's public tool factories own sampling, preview and PDF coordinates.
 // Keep raw input here: EmbedPDF 2.x strips pointerType/pressure when dispatching.
+export const TOUCH_INTENT_DELAY = 100, PEN_TOUCH_GUARD = 650, MIN_PINCH_SPAN = 80
 export type HandwritingTool = 'pen' | 'highlighter' | 'eraser'
 type Point = { x: number; y: number }
 export const HANDWRITING_TOOLS = { pen: 'sireader-handwriting-pen', highlighter: 'sireader-handwriting-highlighter', eraser: 'sireader-handwriting-eraser' }
@@ -67,7 +68,9 @@ export function createHandwritingSession(options: {
   let raw: PointerEvent | null = null, penDown = false, palmUntil = 0
   let previous: { tool: any; mode: string; locked: any } | null = null
   let finishCurrent: ((commit: boolean) => void) | null = null
-  let pan: { x: number; y: number; left: number; top: number } | null = null
+  let pan: { x: number; y: number; left: number; top: number; readyAt: number } | null = null
+  let panTimer: ReturnType<typeof setTimeout> | undefined
+  let nativePinch = false, palmGesture = false, touchCount = 0
   let multiTouch = false, replaying = false, recording = false, groupCount = 0
   const undoGroups: number[] = [], redoGroups: number[] = []
   const notifyHistory = () => options.onHistoryChange?.({ canUndo: undoGroups.length > 0, canRedo: redoGroups.length > 0 })
@@ -97,43 +100,97 @@ export function createHandwritingSession(options: {
     }
   }
   const touches = new Map<number, Point>(), blocked = new Set<number>()
-  const pointerTypes = ['pointerdown', 'pointermove', 'pointerup', 'pointercancel'] as const
+  const pointerTypes = ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'pointerover'] as const
   const safe = (fn: () => void) => { try { fn() } catch (error) { onError(error) } }
   const stop = (event: Event) => { if (event.cancelable) event.preventDefault(); event.stopImmediatePropagation() }
+  const stopPan = () => { clearTimeout(panTimer); panTimer = undefined; pan = null }
+  const flushPan = () => {
+    clearTimeout(panTimer); panTimer = undefined
+    if (!enabled || allowTouch || penDown || blocked.size || (palmGesture && touchCount > 0) || Date.now() < palmUntil || touches.size !== 1 || multiTouch || !pan) return
+    const point = touches.values().next().value!
+    if (Math.hypot(point.x - pan.x, point.y - pan.y) < 10) return
+    viewport.scrollTo({ x: pan.left + pan.x - point.x, y: pan.top + pan.y - point.y, behavior: 'instant' })
+  }
+  const quarantineTouches = () => {
+    if (!penDown && capturedId !== null) safe(() => finishCurrent?.(false))
+    if (touches.size || touchCount) palmGesture = true
+    for (const id of touches.keys()) blocked.add(id)
+    touches.clear(); stopPan(); multiTouch = false
+  }
+  const claimPen = () => {
+    // A genuine pinch already admitted to EmbedPDF must finish in its own
+    // coordinates. Reject likely palms BEFORE starting that native gesture.
+    if (nativePinch) return
+    quarantineTouches()
+    palmUntil = Date.now() + PEN_TOUCH_GUARD
+  }
   const onPointer = (event: PointerEvent) => {
     raw = event
     if (!enabled) return
+    if (event.pointerType === 'pen' && ['pointerover', 'pointermove', 'pointerdown'].includes(event.type)) claimPen()
     if (tool === 'eraser' && (event.pointerType !== 'touch' || allowTouch)) {
       showFeedback(event)
       if (event.type === 'pointerup' || event.type === 'pointercancel') trailTimer = setTimeout(hideFeedback, 180)
     }
     if (event.pointerType === 'touch') {
-      if (event.type === 'pointerdown' && (penDown || Date.now() < palmUntil)) blocked.add(event.pointerId)
+      if (event.type === 'pointerdown' && (penDown || Date.now() < palmUntil || blocked.size > 0 || (palmGesture && touchCount > 0))) blocked.add(event.pointerId)
       if (blocked.has(event.pointerId)) {
-        if (event.type === 'pointerup' || event.type === 'pointercancel') blocked.delete(event.pointerId)
+        if (event.type === 'pointerup' || event.type === 'pointercancel') { blocked.delete(event.pointerId); if (!blocked.size && !touchCount) palmGesture = false }
         stop(event); return
       }
       if (event.type === 'pointerdown') {
         touches.set(event.pointerId, { x: event.clientX, y: event.clientY })
-        if (touches.size === 1) { const m = viewport.getMetrics(); pan = { x: event.clientX, y: event.clientY, left: m.scrollLeft, top: m.scrollTop } }
-        else { multiTouch = true; pan = null }
+        if (touches.size === 1) {
+          const m = viewport.getMetrics()
+          pan = { x: event.clientX, y: event.clientY, left: m.scrollLeft, top: m.scrollTop, readyAt: Date.now() + TOUCH_INTENT_DELAY }
+          clearTimeout(panTimer); panTimer = setTimeout(flushPan, TOUCH_INTENT_DELAY)
+        } else {
+          multiTouch = true; stopPan()
+          const [a, b] = Array.from(touches.values())
+          if (!nativePinch && (touches.size > 2 || Math.hypot(a.x - b.x, a.y - b.y) < MIN_PINCH_SPAN)) {
+            quarantineTouches(); stop(event); return
+          }
+        }
       }
-      if (event.type === 'pointermove' && touches.has(event.pointerId) && !allowTouch && touches.size === 1 && !penDown && !multiTouch && pan) {
-        // Same absolute origin as native panMode; no stale-metric accumulation.
-        viewport.scrollTo({ x: pan.left + pan.x - event.clientX, y: pan.top + pan.y - event.clientY, behavior: 'instant' })
-        if (event.cancelable) event.preventDefault()
+      if (event.type === 'pointermove' && touches.has(event.pointerId)) {
+        touches.set(event.pointerId, { x: event.clientX, y: event.clientY })
+        if (!allowTouch && touches.size === 1 && !penDown && !multiTouch && pan) {
+          if (Date.now() >= pan.readyAt) flushPan()
+          if (event.cancelable) event.preventDefault()
+        }
       }
       if (event.type === 'pointerup' || event.type === 'pointercancel') {
+        // A quick, substantial single-finger swipe can finish inside the short
+        // intent window. Commit its final displacement instead of dropping it.
+        if (event.type === 'pointerup' && touches.size === 1 && !multiTouch && pan &&
+          (Date.now() >= pan.readyAt || Math.hypot(event.clientX - pan.x, event.clientY - pan.y) >= 30)) {
+          touches.set(event.pointerId, { x: event.clientX, y: event.clientY }); flushPan()
+        }
         touches.delete(event.pointerId)
-        if (!touches.size) { pan = null; multiTouch = false }
+        if (!touches.size) { stopPan(); multiTouch = false }
       }
     }
   }
-  // Native pinch uses Touch Events. Suppress its start/moves during pen contact,
-  // but let end/cancel reach it so an earlier gesture cannot remain stuck.
+  // Classify the touch group before native pinch sees touchstart. Cancelling
+  // only after its preview begins can shift ink or commit a spurious zoom.
   const onTouch = (event: TouchEvent) => {
-    if (enabled && !allowTouch && touches.size === 1 && event.type === 'touchmove') { stop(event); return }
-    if (enabled && (penDown || Date.now() < palmUntil || blocked.size) && !['touchend', 'touchcancel'].includes(event.type)) stop(event)
+    if (!enabled) return
+    touchCount = event.touches.length
+    if (event.type === 'touchend' || event.type === 'touchcancel') {
+      if (touchCount < 2) nativePinch = false
+      if (!touchCount) { palmGesture = false; blocked.clear(); touches.clear(); stopPan(); multiTouch = false }
+      return // Let genuine native gestures complete their normal cleanup.
+    }
+    if (penDown || Date.now() < palmUntil || blocked.size || palmGesture) { palmGesture = true; stop(event); return }
+    if (event.type === 'touchstart' && touchCount === 2) {
+      const [a, b] = Array.from(event.touches)
+      if (Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) < MIN_PINCH_SPAN) {
+        quarantineTouches(); palmGesture = true; stop(event); return
+      }
+      nativePinch = true
+    }
+    if (!allowTouch && touchCount === 1 && event.type === 'touchmove') stop(event)
+    if (!nativePinch && touchCount > 2) { quarantineTouches(); palmGesture = true; stop(event) }
   }
   const acceptDown = (event: PointerEvent | null) => {
     if (!enabled || !event) return false
@@ -143,9 +200,8 @@ export function createHandwritingSession(options: {
       return allowTouch && !penDown && !blocked.has(event.pointerId)
     }
     if (event.pointerType === 'pen') {
-      if (touches.size > 1) return false
-      for (const id of touches.keys()) blocked.add(id)
-      touches.clear()
+      if (nativePinch) return false
+      claimPen()
       return true
     }
     return event.pointerType === 'mouse' && event.button === 0
@@ -159,7 +215,7 @@ export function createHandwritingSession(options: {
         if (activeId === null) return
         const data = preview?.data
         activeId = null; capturedId = null
-        if (penDown) { penDown = false; palmUntil = Date.now() + 120 }
+        if (penDown) { penDown = false; palmUntil = Date.now() + PEN_TOUCH_GUARD }
         if (finishCurrent === finish) finishCurrent = null
         try { native?.onPointerCancel?.(lastPoint, lastEvent, '') }
         catch (error) { if ((error as DOMException)?.name !== 'NotFoundError') throw error }
@@ -229,7 +285,7 @@ export function createHandwritingSession(options: {
     exit() {
       if (!enabled) return
       safe(() => finishCurrent?.(true))
-      hideFeedback(); pan = null; multiTouch = false
+      hideFeedback(); stopPan(); multiTouch = false; nativePinch = palmGesture = false; touchCount = 0
       undoGroups.length = redoGroups.length = 0; notifyHistory()
       enabled = false; penDown = false; touches.clear(); blocked.clear(); palmUntil = 0
       scope.deselectAnnotation()
@@ -251,7 +307,7 @@ export function createHandwritingSession(options: {
       finally { replaying = false; notifyHistory() }
     },
     setTool(next: HandwritingTool) { safe(() => finishCurrent?.(true)); hideFeedback(); tool = next; if (enabled) activate() },
-    setAllowTouch(value: boolean) { safe(() => finishCurrent?.(true)); allowTouch = value; touches.clear(); pan = null; multiTouch = false },
+    setAllowTouch(value: boolean) { safe(() => finishCurrent?.(true)); allowTouch = value; touches.clear(); stopPan(); multiTouch = false },
     setStyle(color: string, width: number) {
       safe(() => finishCurrent?.(true))
       for (const kind of ['pen', 'highlighter'] as const) root.setToolDefaults(HANDWRITING_TOOLS[kind], { strokeColor: color, color, strokeWidth: kind === 'pen' ? width : width * 5 })
